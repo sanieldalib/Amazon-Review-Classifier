@@ -5,21 +5,17 @@ output: html_notebook
 ```{r}
 knitr::opts_chunk$set(fig.height=4, fig.width=6, warning = F)
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(ISLR, rattle, partykit, ggplot2, dplyr, car, tm, gbm, wordcloud, keras)
+pacman::p_load(ISLR, rattle, partykit, ggplot2, dplyr, car, tm, gbm, wordcloud, keras, glmnet)
 ```
 
 ```{r}
 reviews <- read.csv('amazon_reviews.csv')
-reviews$LABEL <- ifelse(reviews$LABEL == )
+
+# coding fake as 1 and real as 0
+reviews$LABEL <- as.factor(ifelse(reviews$LABEL == '__label1__', 1, 0))
 reviews$REVIEW_TITLE <- as.character(reviews$REVIEW_TITLE)
 reviews$REVIEW_TEXT <- as.character(reviews$REVIEW_TEXT)
 str(reviews)
-
-# splitting data
-# set.seed(245)
-# train <- sample(nrow(reviews), .75 * nrow(reviews))
-# reviews.train <- reviews[train,]
-# reviews.test <- reviews[-train,]
 ```
 
 ```{r}
@@ -40,9 +36,71 @@ dtm.cleaned <- removeSparseTerms(dtm, .99)
 
 ```{r}
 # combining dtms with original data
-
 reviews.corpus <- data.frame(reviews, as.matrix(dtm.cleaned))
-reviews.corpus
 ```
+
+```{r}
+# splitting data
+set.seed(245)
+train <- sample(nrow(reviews.corpus), .75 * nrow(reviews.corpus))
+reviews.train <- reviews.corpus[train,]
+reviews.test <- reviews.corpus[-train,]
+```
+
+```{r}
+# running lasso to remove some words
+X <- sparse.model.matrix(LABEL ~ . - DOC_ID - PRODUCT_ID - PRODUCT_TITLE - REVIEW_TITLE - REVIEW_TEXT - PRODUCT_CATEGORY, data = reviews.train)[,-1]
+Y <- reviews.train$LABEL
+
+reviews.train$LABEL
+
+
+reviews.lasso <- cv.glmnet(X, Y, family = "binomial")
+plot(reviews.lasso)
+
+beta.lasso <- coef(reviews.lasso, s="lambda.min")   # output lasso estimates
+beta <- beta.lasso[which(beta.lasso !=0),] # non zero beta's
+beta <- as.matrix(beta);
+beta <- rownames(beta)
+beta
+
+glm.input <- as.formula(paste("LABEL", "~", paste(beta[-c(1,3)],collapse = "+")))
+
+reviews.glm <- glm(glm.input, family=binomial, reviews.train)
+predict.glm <- predict(reviews.glm, reviews.test, type = "response")
+class.glm <- rep("0", nrow(reviews.test))
+class.glm[predict.glm > .5] ="1"
+class.glm
+
+reviews.test$LABEL
+testacc.glm <- mean(reviews.test$LABEL == class.glm)
+testacc.glm
+
+pROC::roc(reviews.test$LABEL, predict.glm, plot=T)
+```
+
+```{r}
+
+beta.lasso.1se <- coef(reviews.lasso, s="lambda.1se")   # output lasso estimates
+beta <- beta.lasso[which(beta.lasso !=0),] # non zero beta's
+beta <- as.matrix(beta);
+beta <- rownames(beta)
+beta
+
+glm.input.1se <- as.formula(paste("LABEL", "~", paste(beta[-c(1,3)],collapse = "+")))
+
+reviews.glm.1se <- glm(glm.input, family=binomial, reviews.train)
+predict.glm.1se <- predict(reviews.glm.1se, reviews.test, type = "response")
+class.glm.1se <- rep("0", nrow(reviews.test))
+class.glm.1se[predict.glm.1se > .5] ="1"
+class.glm.1se
+
+reviews.test$LABEL
+testacc.glm.1se <- mean(reviews.test$LABEL == class.glm.1se)
+testacc.glm.1se
+
+pROC::roc(reviews.test$LABEL, predict.glm.1se, plot=T)
+```
+
 
 
