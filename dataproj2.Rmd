@@ -1,0 +1,48 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+knitr::opts_chunk$set(fig.height=4, fig.width=6, warning = F)
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(ISLR, rattle, partykit, ggplot2, dplyr, car, tm, gbm, wordcloud, keras)
+```
+
+```{r}
+reviews <- read.csv('amazon_reviews.csv')
+reviews$LABEL <- ifelse(reviews$LABEL == )
+reviews$REVIEW_TITLE <- as.character(reviews$REVIEW_TITLE)
+reviews$REVIEW_TEXT <- as.character(reviews$REVIEW_TEXT)
+str(reviews)
+
+# splitting data
+# set.seed(245)
+# train <- sample(nrow(reviews), .75 * nrow(reviews))
+# reviews.train <- reviews[train,]
+# reviews.test <- reviews[-train,]
+```
+
+```{r}
+hist(reviews.train$RATING)
+hist(reviews.test$RATING)
+```
+
+```{r}
+corpus <- VCorpus(VectorSource(reviews$REVIEW_TEXT)) %>% tm_map(removeWords, stopwords('english')) %>% tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>% tm_map(content_transformer(tolower)) %>% tm_map(stemDocument, lazy = TRUE)
+
+
+dtm <- DocumentTermMatrix(corpus)
+dim(dtm)
+
+dtm.cleaned <- removeSparseTerms(dtm, .99)
+```
+
+```{r}
+# combining dtms with original data
+
+reviews.corpus <- data.frame(reviews, as.matrix(dtm.cleaned))
+reviews.corpus
+```
+
+
