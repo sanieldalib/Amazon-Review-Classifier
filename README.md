@@ -1,6 +1,4 @@
 # Classifying Fake Amazon Reviews
-
-[TOC]
 ## Introduction
 With the rise of fake news and misinformation flooding the internet, it is often extremely difficult to determine what is true and what is not. Amazon, as one of the largest e-commerce sites in the world is certainly not safe from this misinformation. A common threat plaguing Amazon is the issue of fake reviews. I did not realize how widespread this was of an issue until I was shopping for a new laptop charger a few weeks back, only to discover that most of the reviews for the chargers I was looking at were not even related to the product page I was on. In this data project, I will attempt to explore the nature of these fake reviews, build several models to predict whether a review is fake or not, and finally build an interactive application where you can check the reviews of any Amazon product against my model. 
 
