@@ -1,0 +1,336 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+knitr::opts_chunk$set(fig.height=4, fig.width=6, warning = F)
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(ISLR, rattle, partykit, ggplot2, dplyr, car, tm, gbm, wordcloud, keras, glmnet, ranger, randomForest, xgboost, caret, e1071, ade4, data.table, Snowball)
+```
+
+```{r}
+reviews <- read.csv('amazon_reviews.csv')
+names(reviews)
+
+# coding fake as 1 and real as 0
+reviews$LABEL <- as.factor(ifelse(reviews$LABEL == '__label1__', 1, 0))
+reviews$REVIEW_TITLE <- as.character(reviews$REVIEW_TITLE)
+reviews$REVIEW_TEXT <- as.character(reviews$REVIEW_TEXT)
+reviews$VERIFIED_PURCHASE <- as.numeric(ifelse(reviews$VERIFIED_PURCHASE == 'Y', 1, 0))
+unique(reviews$PRODUCT_CATEGORY)
+str(reviews$REVIEW_TEXT)
+```
+
+```{r}
+hist(reviews$RATING)
+```
+
+```{r}
+corpus <- VCorpus(VectorSource(reviews$REVIEW_TEXT)) %>% tm_map(removeWords, stopwords()) %>% tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>% tm_map(content_transformer(tolower)) %>% tm_map(stemDocument, lazy = TRUE)
+
+dtm <- DocumentTermMatrix(corpus)
+
+dtm.cleaned <- removeSparseTerms(dtm, .9995)
+# terms <- Terms(dtm.cleaned)
+# write.csv(terms, 'terms.csv')
+(terms)
+dim(dtm.cleaned)
+```
+
+```{r}
+sums <- apply(dtm.cleaned,2,sum)
+sums <- sums[order(sums, decreasing = TRUE)]
+sums_top <- sums[1:20]
+sums_top <- as.matrix(sums_top)
+colnames(sums_top) <- c("count")
+sums_top
+```
+
+```{r}
+# combining dtms with original data
+reviews.corpus <- data.frame(reviews, as.matrix(dtm.cleaned))
+```
+
+```{r}
+barplot(table(reviews.corpus$LABEL, reviews.corpus$PRODUCT_CATEGORY), xlab="category",legend=rownames(table(reviews.corpus$LABEL)))
+```
+
+```{r}
+barplot(table(reviews.corpus$LABEL, reviews.corpus$RATING), xlab="rating",legend=rownames(table(reviews.corpus$LABEL)))
+```
+```{r}
+by_fake <- group_by(reviews.corpus, LABEL)
+avg_rev_len <- summarise(by_fake, review_length = mean(nchar(REVIEW_TEXT)))
+```
+
+
+```{r}
+ggplot(data=avg_rev_len, aes(x=LABEL, y=review_length)) +
+  geom_bar(stat="identity") +
+  xlab("Real (0) and Fake (1)") +
+  ylab("Avg review length (characters)")
+```
+
+```{r}
+# splitting data
+set.seed(245)
+train <- sample(nrow(reviews.corpus), .75 * nrow(reviews.corpus))
+reviews.train <- reviews.corpus[train,]
+reviews.test <- reviews.corpus[-train,]
+
+save(reviews.train, file = 'reviews.train.RData')
+```
+
+```{r}
+# running lasso to remove some words
+X <- sparse.model.matrix(LABEL ~ . - DOC_ID - PRODUCT_ID - PRODUCT_TITLE - REVIEW_TITLE - REVIEW_TEXT, data = reviews.train)[,-1]
+Y <- reviews.train$LABEL
+
+reviews.lasso <- cv.glmnet(X, Y, family = "binomial")
+plot(reviews.lasso)
+
+beta.lasso <- coef(reviews.lasso, s="lambda.min")   # output lasso estimates
+beta <- beta.lasso[which(beta.lasso !=0),] # non zero beta's
+beta <- as.matrix(beta);
+beta <- rownames(beta)
+beta
+
+glm.input <- as.formula(paste("LABEL", "~ VERIFIED_PURCHASE + PRODUCT_CATEGORY + RATING +", paste(beta[-(1:19)],collapse = "+")))
+
+reviews.glm <- glm(glm.input, family=binomial, reviews.train)
+predict.glm <- predict(reviews.glm, reviews.test, type = "response")
+class.glm <- rep("0", nrow(reviews.test))
+class.glm[predict.glm > .5] ="1"
+class.glm
+
+reviews.test$LABEL
+testacc.glm <- mean(reviews.test$LABEL == class.glm)
+testacc.glm
+reviews.glm.summary <- summary(reviews.glm)
+coefs.glm.min <- reviews.glm.summary$coefficients[,4]
+coefs.glm.min[order(coefs.glm.min)]
+pROC::roc(reviews.test$LABEL, predict.glm, plot=T)
+```
+
+```{r}
+
+beta.lasso.1se <- coef(reviews.lasso, s="lambda.1se")   # output lasso estimates
+beta <- beta.lasso.1se[which(beta.lasso.1se != 0),] # non zero beta's
+beta <- as.matrix(beta);
+beta <- rownames(beta)
+beta
+
+glm.input.1se <- as.formula(paste("LABEL", "~ VERIFIED_PURCHASE + PRODUCT_CATEGORY + RATING +", paste(beta[-(1:14)],collapse = "+")))
+
+reviews.glm.1se <- glm(glm.input.1se, family=binomial, reviews.train)
+predict.glm.1se <- predict(reviews.glm.1se, reviews.test, type = "response")
+class.glm.1se <- rep("0", nrow(reviews.test))
+class.glm.1se[predict.glm.1se > .5] ="1"
+
+testacc.glm.1se <- mean(reviews.test$LABEL == class.glm.1se)
+testacc.glm.1se
+pROC::roc(reviews.test$LABEL, predict.glm.1se, plot=T)
+```
+
+```{r}
+dim(reviews.train)
+rf.mtry <- randomForest(LABEL ~ . - DOC_ID - PRODUCT_ID - PRODUCT_TITLE - REVIEW_TITLE - REVIEW_TEXT, reviews.train, mtry = 32, ntree = 200)
+save(rf.mtry, file = 'rf.mtry.RData')
+load(file = 'rf.mtry.RData')
+plot(rf.mtry)
+#select 200 trees - choose not to iterate over params bc too many
+dim(reviews.train)
+```
+
+```{r}
+# random forest - 0.1910476 MCE - 200 trees - accuracy = 0.8089524
+dim(reviews.train)
+reviews.rf <- ranger::ranger(LABEL ~ . - DOC_ID - PRODUCT_ID - PRODUCT_TITLE - REVIEW_TITLE - REVIEW_TEXT, reviews.train, num.trees = 200, importance="impurity")
+save(reviews.rf, file = 'reviews.rf.RData')
+load('reviews.rf.RData')
+str(reviews.test)
+reviews.rf$prediction.error
+predict.rf <- predict(reviews.rf, data=reviews.test, type="response")  # output the classes by majority vote
+mean(reviews.test$LABEL != predict.rf$predictions) #acc of model
+predict.rf$predictions
+reviews.rf$variable.importance[order(reviews.rf$variable.importance, decreasing = TRUE)][1:30]
+```
+
+```{r}
+# 0.1979048 - eta = 0.05, nrounds = 342
+boost.data <- reviews.train[,-c(1,2,6,7,8,9)]
+names(boost.data)
+boost.data$PRODUCT_CATEGORY <- as.numeric(boost.data$PRODUCT_CATEGORY)
+boost.data$VERIFIED_PURCHASE <- as.numeric(boost.data$VERIFIED_PURCHASE) - 1
+boost.train <- xgb.DMatrix(data = as.matrix(boost.data[,-1]), label = as.matrix(reviews.train$LABEL))
+bstDMatrix <- xgboost(data = boost.train, eta = 0.05, nrounds = 342)
+
+# xgb.cv(data = boost.train, eta = 0.02, nrounds = 1000, nfold = 5)
+
+boost.test <- reviews.test[,-c(1,2,6,7,8,9)]
+boost.test$VERIFIED_PURCHASE <- as.numeric(boost.test$VERIFIED_PURCHASE) - 1
+boost.test$PRODUCT_CATEGORY <- as.numeric(boost.test$PRODUCT_CATEGORY)
+
+pred.boost <- predict(bstDMatrix, newdata = as.matrix(boost.test[,-1]), type = 'class')
+class.boost <- rep("0", nrow(boost.test))
+class.boost[pred.boost > .5] ="1"
+class.boost <- as.factor(class.boost)
+mean(class.boost != reviews.test$LABEL)
+
+confusionMatrix(class.boost, reviews.test$LABEL)
+mat <- xgb.importance(feature_names = colnames(boost.data[,-1]),model = bstDMatrix)
+xgb.plot.importance(importance_matrix = mat[1:20]) 
+```
+
+```{r}
+only.verif <- glm(LABEL ~ VERIFIED_PURCHASE, data = reviews.train, family = 'binomial')
+only.verif.pred <- predict(only.verif, reviews.test, type = 'response')
+class.only.verif <- rep("0", nrow(reviews.test))
+class.only.verif[only.verif.pred > .5] ="1"
+mean(class.only.verif != reviews.test$LABEL)
+```
+
+```{r}
+use_implementation("tensorflow")
+# remove unneeded features
+nn.data <- reviews.corpus[, -c(1,6,7,8,9)]
+dim(nn.data)
+# one-hot encode product category
+dummy <- acm.disjonctif(nn.data['PRODUCT_CATEGORY'])
+nn.data['PRODUCT_CATEGORY'] = NULL
+nn.data <- cbind(nn.data, dummy)
+
+
+# recoding VERIFIED PURCHASE to number
+nn.data$VERIFIED_PURCHASE  <- as.numeric(nn.data$VERIFIED_PURCHASE) - 1
+
+set.seed(245)
+train.indices <- sample(nrow(nn.data), 0.75*nrow(nn.data))
+nn.data.test <- nn.data[-train.indices, ]
+nn.data.train <- nn.data[train.indices, ]
+
+names(nn.data.train)
+nn.data.train.y <- as.matrix(nn.data.train[, 1])
+nn.data.train.x <-as.matrix(nn.data.train[, -1])
+nn.data.test.y <- as.matrix(nn.data.test[, 1])
+nn.data.test.x <- as.matrix(nn.data.test[, -1])
+
+dim(nn.data.train.x)
+
+# 0.8232 accuracy
+sgd = optimizer_sgd(lr = 0.1)
+
+nn.model <- keras_model_sequential() %>%
+  layer_dense(units = 32, activation = 'relu', input_shape = c(4216), 
+              kernel_regularizer = regularizer_l2(l = 0.005)) %>% 
+  layer_dropout(rate = 0.3) %>% 
+  layer_dense(units = 32, activation = "relu", 
+              kernel_regularizer = regularizer_l2(l = 0.005)) %>%
+    layer_dropout(rate = 0.3) %>%
+    # layer_dense(units = 16, activation = "relu",
+    #           kernel_regularizer = regularizer_l2(l = 0.005)) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+nn.model %>% compile(
+  optimizer = sgd,
+  loss = "mean_squared_error",
+  metrics = c("accuracy")
+)
+
+nn.model %>% summary()
+
+nn.fit1 <- nn.model %>% fit(
+  nn.data.train.x,
+  nn.data.train.y,
+  epochs = 50,
+  batch_size = 512,
+  validation_split = 0.2
+)
+
+results <- nn.model %>% evaluate(nn.data.test.x, nn.data.test.y)
+
+nn.model %>% save_model_hdf5('fakereview.hd5')
+```
+
+```{r}
+plot(nn.fit1)
+```
+
+
+```{r}
+title.corpus <- VCorpus(VectorSource(reviews$REVIEW_TITLE)) %>% tm_map(removeWords, stopwords()) %>% tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>% tm_map(content_transformer(tolower)) %>% tm_map(stemDocument, lazy = TRUE)
+
+load('title.corpus.RData')
+
+dtm.title <- DocumentTermMatrix(title.corpus)
+dtm.title.sparse <- removeSparseTerms(dtm.title, .995)
+dim(dtm.title.sparse)
+
+colnames(dtm.title.sparse) <- paste('title', colnames(dtm.title.sparse), sep = '_')
+reviews.titles <- data.frame(reviews.corpus, as.matrix(dtm.title.sparse))
+dim(reviews.titles)
+```
+
+```{r}
+# remove unneeded features
+nn.data.titles <- reviews.titles[, -c(1,6,7,8,9)]
+nrow(reviews.titles)
+
+# one-hot encode product category
+dummy <- acm.disjonctif(nn.data.titles['PRODUCT_CATEGORY'])
+nn.data.titles['PRODUCT_CATEGORY'] = NULL
+nn.data.titles  <- cbind(nn.data.titles, dummy)
+
+# recoding VERIFIED PURCHASE to number
+nn.data.titles$VERIFIED_PURCHASE  <- as.numeric(nn.data.titles$VERIFIED_PURCHASE) - 1
+
+set.seed(245)
+train.indices <- sample(nrow(nn.data.titles), 0.75*nrow(nn.data.titles))
+nn.data.titles.test <- nn.data.titles[-train.indices, ]
+nn.data.titles.train <- nn.data.titles[train.indices, ]
+nrow(nn.data.titles.train)
+
+nn.data.titles.train.y <- as.matrix(nn.data.titles.train[, 1])
+nn.data.titles.train.x <-as.matrix(nn.data.titles.train[, -1])
+nn.data.titles.test.y <- as.matrix(nn.data.titles.test[, 1])
+nn.data.titles.test.x <- as.matrix(nn.data.titles.test[, -1])
+
+names(nn.data)[4190]
+# 0.8109 accuracy
+sgd = optimizer_sgd(lr = 0.05)
+
+nn.model.titles <- keras_model_sequential() %>%
+  layer_dense(units = 32, activation = 'relu', input_shape = c(4306), 
+              kernel_regularizer = regularizer_l2(l = 0.01)) %>% 
+  layer_dropout(rate = 0.3) %>% 
+  layer_dense(units = 32, activation = "relu", 
+              kernel_regularizer = regularizer_l2(l = 0.01)) %>%
+    layer_dropout(rate = 0.3) %>%
+    layer_dense(units = 16, activation = "relu",
+              kernel_regularizer = regularizer_l2(l = 0.01)) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+nn.model.titles %>% compile(
+  optimizer = sgd,
+  loss = "mean_squared_error",
+  metrics = c("accuracy")
+)
+
+nn.model.titles %>% summary()
+
+nn.titles <- nn.model.titles %>% fit(
+  nn.data.titles.train.x,
+  nn.data.titles.train.y,
+  epochs = 100,
+  batch_size = 512,
+  validation_split = 0.2
+)
+
+results <- nn.model.titles %>% evaluate(nn.data.titles.test.x, nn.data.titles.test.y)
+
+plot(nn.titles)
+
+```
+
